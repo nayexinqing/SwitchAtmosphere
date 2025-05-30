@@ -1,0 +1,5 @@
+{
+    "name": "sys-clk-eos",
+    "requires_reboot": true,
+    "tid": "00FF0000636C6BFF"
+}
