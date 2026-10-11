@@ -16,6 +16,8 @@
 *.nar
 *.ear
 *.zip
+*.keys
+.upgrade-cache/
 *.tar.gz
 *.rar
 

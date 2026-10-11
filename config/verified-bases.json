@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "bases": [
+    {
+      "directory": "Atmosphere-22.0.0",
+      "targetSystemVersion": "22.0.0",
+      "verified": true,
+      "note": "原始本地可用整合包，后续有局部定制"
+    },
+    {
+      "directory": "Atmosphere-23.0.1",
+      "targetSystemVersion": "23.0.1",
+      "verified": true,
+      "note": "用户已验证系统版本与启动环境、冷启动、hekate 重启、休眠唤醒及金手指入口；其他功能仍需逐项验证"
+    }
+  ]
+}
