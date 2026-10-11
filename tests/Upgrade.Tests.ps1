@@ -57,6 +57,8 @@ function New-Fixture {
     Write-FixtureFile $base 'hbmenu.nro' 'user-sphaira'
     Write-FixtureFile $base 'switch/sphaira/sphaira.nro' 'user-sphaira'
     Write-FixtureFile $base 'Firmware-22.0.0/old.nca' 'old-firmware'
+    Write-FixtureFile $base 'lakka/SYSTEM' 'local-lakka'
+    Write-FixtureFile $base 'lakka/storage/.cache/ssh/ssh_host_ed25519_key' 'private-test-key'
 
     $atmosphere = New-ZipFixture $Root 'atmosphere' @{
         'atmosphere/package3' = 'new-package3'
@@ -133,10 +135,12 @@ try {
     Assert-Text 'user-sphaira' (Join-Path $fixture.Output 'hbmenu.nro')
     Assert-Text 'user-cheat' (Join-Path $fixture.Output 'atmosphere/contents/1234567890ABCDEF/cheats/test.txt')
     if (Test-Path -LiteralPath (Join-Path $fixture.Output 'Firmware-22.0.0')) { throw 'Old firmware was copied into new package' }
+    if (Test-Path -LiteralPath (Join-Path $fixture.Output 'lakka')) { throw 'Lakka was copied into new package' }
     if (-not (Test-Path -LiteralPath $fixture.Report)) { throw 'Upgrade report was not generated' }
     $buildReport = Get-Content -LiteralPath $fixture.Report -Raw | ConvertFrom-Json
     if ('bootloader/hekate_ipl.ini' -notin $buildReport.preservedBasePaths -or
         'atmosphere/contents/1234567890ABCDEF/cheats/test.txt' -notin $buildReport.preservedBasePaths -or
+        'lakka/storage/.cache/ssh/ssh_host_ed25519_key' -notin $buildReport.excludedBasePaths -or
         'Firmware-22.0.0' -notin $buildReport.removedFirmwareDirectories) {
         throw 'Report does not clearly identify preserved files and removed old firmware'
     }
@@ -210,6 +214,15 @@ try {
             -ReportPath $keysFixture.Report | Out-Null
     } 'Key material found in base package'
     Write-Output 'PASS: any .keys file in the base is rejected'
+
+    $sshKeysFixture = New-Fixture (Join-Path $testRoot 'ssh-keys')
+    Write-FixtureFile $sshKeysFixture.Base 'bootloader/payloads/id_ed25519' 'private-test-key'
+    Assert-Fails {
+        & $scriptPath -Manifest $sshKeysFixture.Manifest -AssetDirectory $sshKeysFixture.Assets `
+            -BaseDirectory $sshKeysFixture.Base -OutputDirectory $sshKeysFixture.Output `
+            -ReportPath $sshKeysFixture.Report | Out-Null
+    } 'Key material found in base package'
+    Write-Output 'PASS: SSH private key names outside Lakka are rejected'
 
     $noPatchFixture = New-Fixture (Join-Path $testRoot 'no-sys-patch')
     $noPatchManifest = Get-Content -LiteralPath $noPatchFixture.Manifest -Raw | ConvertFrom-Json -AsHashtable

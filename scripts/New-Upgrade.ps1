@@ -240,6 +240,7 @@ try {
 
     $baseFiles = @(Get-ArchiveFiles $base)
     $preservedBasePaths = [Collections.Generic.List[string]]::new()
+    $excludedBasePaths = [Collections.Generic.List[string]]::new()
     $oldFirmwareDirectories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($file in $baseFiles) {
         $rel = Get-RelativePath $base $file.FullName
@@ -247,7 +248,13 @@ try {
             [void]$oldFirmwareDirectories.Add(($rel -split '/')[0])
             continue
         }
-        if ($rel -match '(?i)\.keys$') { throw "Key material found in base package: $rel" }
+        if ($rel -match '^lakka/') {
+            $excludedBasePaths.Add($rel)
+            continue
+        }
+        if ($rel -match '(?i)(^|/)(?:[^/]*\.keys|id_rsa|id_ed25519|ssh_host_[^/]*_key|[^/]*\.pem|[^/]*\.p12|[^/]*\.pfx)$') {
+            throw "Key material found in base package: $rel"
+        }
         if (-not $seen.Contains($rel)) { $preservedBasePaths.Add($rel) }
     }
 
@@ -260,6 +267,7 @@ try {
         changes = @($changes | Sort-Object path)
         ignoredUpstreamPaths = @($ignoredUpstream | Sort-Object)
         preservedBasePaths = @($preservedBasePaths | Sort-Object)
+        excludedBasePaths = @($excludedBasePaths | Sort-Object)
         removedFirmwareDirectories = @($oldFirmwareDirectories | Sort-Object)
         firmwareFileCount = $firmwareFiles.Count
         warnings = if (-not $expanded.ContainsKey('sysPatch')) { @('sys-patch was not updated; the base package version is preserved and compatibility must be checked.') } else { @() }
@@ -272,7 +280,7 @@ try {
         [IO.Directory]::CreateDirectory($stage) | Out-Null
         foreach ($file in $baseFiles) {
             $rel = Get-RelativePath $base $file.FullName
-            if ($rel -match '^Firmware[.\\-]') { continue }
+            if ($rel -match '^Firmware[.\\-]' -or $rel -match '^lakka/') { continue }
             $destination = Join-Path $stage $rel
             [IO.Directory]::CreateDirectory((Split-Path $destination -Parent)) | Out-Null
             Copy-Item -LiteralPath $file.FullName -Destination $destination
