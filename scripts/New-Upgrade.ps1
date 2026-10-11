@@ -252,7 +252,7 @@ try {
             $excludedBasePaths.Add($rel)
             continue
         }
-        if ($rel -match '(?i)(^|/)(?:[^/]*\.keys|id_rsa|id_ed25519|ssh_host_[^/]*_key|[^/]*\.pem|[^/]*\.p12|[^/]*\.pfx)$') {
+        if ($rel -match '(?i)(^|/)(?:[^/]*\.(?:key|keys|jks|keystore|pem|p12|pfx|der|crt|cer)|id_rsa|id_ed25519|ssh_host_[^/]*_key)$') {
             throw "Key material found in base package: $rel"
         }
         if (-not $seen.Contains($rel)) { $preservedBasePaths.Add($rel) }

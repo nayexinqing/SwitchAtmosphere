@@ -1,0 +1,148 @@
+name: Build draft Atmosphere release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: Target Switch firmware version, for example 23.0.1
+        required: true
+        type: string
+      base_version:
+        description: Version of an already published, reviewed release bundle
+        required: true
+        type: string
+      base_sha256:
+        description: SHA-256 of Atmosphere-<base_version>.zip from that release
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: draft-atmosphere-${{ inputs.target_version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_VERSION: ${{ inputs.target_version }}
+      BASE_VERSION: ${{ inputs.base_version }}
+      BASE_SHA256: ${{ inputs.base_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run offline PowerShell tests
+        shell: pwsh
+        run: |
+          ./tests/Sources.Tests.ps1
+          ./tests/Upgrade.Tests.ps1
+          ./tests/Release.Tests.ps1
+
+      - name: Validate inputs and published baseline
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TARGET_VERSION -notmatch '^\d+\.\d+\.\d+$' -or
+              $env:BASE_VERSION -notmatch '^\d+\.\d+\.\d+$' -or
+              $env:BASE_SHA256 -notmatch '^[a-fA-F0-9]{64}$') {
+            throw 'Versions must be X.Y.Z and base_sha256 must be 64 hexadecimal characters.'
+          }
+          if ([version]$env:TARGET_VERSION -lt [version]$env:BASE_VERSION) {
+            throw 'Target firmware is older than the selected baseline.'
+          }
+          $baseTag = "fw-$($env:BASE_VERSION)"
+          $targetTag = "fw-$($env:TARGET_VERSION)"
+          $baseDraft = gh release view $baseTag --repo $env:GITHUB_REPOSITORY --json isDraft --jq '.isDraft'
+          if ($LASTEXITCODE -ne 0 -or $baseDraft -ne 'false') {
+            throw "Baseline release $baseTag must exist and be published."
+          }
+          $existing = gh release list --repo $env:GITHUB_REPOSITORY --json tagName --limit 100 | ConvertFrom-Json
+          if (@($existing | ForEach-Object tagName) -contains $targetTag) {
+            throw "Release $targetTag already exists."
+          }
+
+      - name: Download and verify baseline ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $baseTag = "fw-$($env:BASE_VERSION)"
+          $zipName = "Atmosphere-$($env:BASE_VERSION).zip"
+          $download = Join-Path $PWD '.upgrade-cache/baseline-download'
+          New-Item -ItemType Directory -Path $download -Force | Out-Null
+          gh release download $baseTag --repo $env:GITHUB_REPOSITORY --pattern $zipName --dir $download
+          if ($LASTEXITCODE -ne 0) { throw "Failed to download $zipName from $baseTag." }
+          $zipPath = Join-Path $download $zipName
+          if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf)) { throw "Missing baseline ZIP: $zipName" }
+          $actual = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:BASE_SHA256.ToLowerInvariant()) { throw 'Baseline SHA-256 mismatch.' }
+          $baseDirectory = Join-Path $PWD ".upgrade-cache/bases/Atmosphere-$($env:BASE_VERSION)"
+          New-Item -ItemType Directory -Path $baseDirectory -Force | Out-Null
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $baseDirectory
+          foreach ($required in @('atmosphere/package3', 'bootloader/hekate_ipl.ini', 'payload.bin')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $baseDirectory $required) -PathType Leaf)) {
+              throw "Baseline ZIP is missing $required."
+            }
+          }
+
+      - name: Lock exact firmware and plan upgrade
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $PWD '.upgrade-cache'
+          $base = Join-Path $root "bases/Atmosphere-$($env:BASE_VERSION)"
+          $candidate = Join-Path $root "candidates/Atmosphere-$($env:TARGET_VERSION)"
+          New-Item -ItemType Directory -Path (Split-Path $candidate -Parent) -Force | Out-Null
+          & ./scripts/Start-LatestUpgrade.ps1 -PackageRoot $root -BaseDirectory $base `
+            -TargetSystemVersion $env:TARGET_VERSION -AssetDirectory (Join-Path $root 'assets') `
+            -ManifestPath (Join-Path $root 'locks/release-lock.json') `
+            -ReportPath (Join-Path $root 'reports/upgrade.json') -OutputDirectory $candidate
+
+      - name: Build candidate and release bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $PWD '.upgrade-cache'
+          $base = Join-Path $root "bases/Atmosphere-$($env:BASE_VERSION)"
+          $candidate = Join-Path $root "candidates/Atmosphere-$($env:TARGET_VERSION)"
+          $lock = Join-Path $root 'locks/release-lock.json'
+          $report = Join-Path $root 'reports/upgrade.json'
+          $planPath = Join-Path $root 'reports/release-plan.json'
+          $dist = Join-Path $root "releases/Atmosphere-$($env:TARGET_VERSION)"
+          New-Item -ItemType Directory -Path (Split-Path $dist -Parent) -Force | Out-Null
+          & ./scripts/Start-LatestUpgrade.ps1 -PackageRoot $root -BaseDirectory $base `
+            -TargetSystemVersion $env:TARGET_VERSION -AssetDirectory (Join-Path $root 'assets') `
+            -ManifestPath $lock -ReportPath $report -OutputDirectory $candidate -Offline -Build
+          $plan = & ./scripts/New-ReleaseBundle.ps1 -PackageDirectory $candidate `
+            -TargetSystemVersion $env:TARGET_VERSION -PlanPath $planPath `
+            -SourceManifestPath $lock -UpgradeReportPath $report
+          & ./scripts/New-ReleaseBundle.ps1 -PackageDirectory $candidate `
+            -TargetSystemVersion $env:TARGET_VERSION -PlanPath $planPath `
+            -SourceManifestPath $lock -UpgradeReportPath $report `
+            -Build -ApprovedPlanSha256 $plan.Sha256 -OutputDirectory $dist
+
+      - name: Create draft Release for device review
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $PWD '.upgrade-cache'
+          $dist = Join-Path $root "releases/Atmosphere-$($env:TARGET_VERSION)"
+          $lock = Join-Path $root 'locks/release-lock.json'
+          $report = Join-Path $root 'reports/upgrade.json'
+          $zip = Join-Path $dist "Atmosphere-$($env:TARGET_VERSION).zip"
+          $checksum = Join-Path $dist "Atmosphere-$($env:TARGET_VERSION).sha256"
+          $metadata = Join-Path $dist "Atmosphere-$($env:TARGET_VERSION).release.json"
+          $notes = Join-Path $root 'release-notes.md'
+          @(
+            "目标 Switch 固件：$($env:TARGET_VERSION)"
+            "基线整合包：fw-$($env:BASE_VERSION)"
+            ''
+            '这是待实机验证的候选包。Atmosphère、hekate、fusee、sys-patch 与固件来源见锁定清单；其他插件和配置沿用基线。'
+            'ZIP 不包含 Lakka、游戏修改及已排除的本地数据。验证启动、重启、休眠、相册、sys-patch 和常用插件后再发布。'
+          ) | Set-Content -LiteralPath $notes -Encoding utf8
+          gh release create "fw-$($env:TARGET_VERSION)" $zip $checksum $metadata $lock $report `
+            --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --draft `
+            --title "Atmosphere for Switch FW $($env:TARGET_VERSION)" --notes-file $notes
+          if ($LASTEXITCODE -ne 0) { throw 'Creating draft Release failed.' }

@@ -56,6 +56,11 @@ function Get-GitHubLatestReleases {
     }
 
     $releases = [ordered]@{}
+    $headers = @{
+        Accept = 'application/vnd.github+json'
+        'User-Agent' = 'SwitchAtmosphere-upgrade-workflow'
+    }
+    if ($env:GH_TOKEN) { $headers.Authorization = "Bearer $($env:GH_TOKEN)" }
     foreach ($repository in @('Atmosphere-NX/Atmosphere', 'CTCaer/hekate', 'impeeza/sys-patch', 'THZoria/NX_Firmware')) {
         $endpoint = if ($repository -eq 'THZoria/NX_Firmware' -and $TargetSystemVersion) {
             "tags/$TargetSystemVersion"
@@ -63,10 +68,7 @@ function Get-GitHubLatestReleases {
         else { 'latest' }
         $uri = "https://api.github.com/repos/$repository/releases/$endpoint"
         try {
-            $releases[$repository] = Invoke-RestMethod -Uri $uri -Headers @{
-                Accept = 'application/vnd.github+json'
-                'User-Agent' = 'SwitchAtmosphere-upgrade-workflow'
-            } -ErrorAction Stop
+            $releases[$repository] = Invoke-RestMethod -Uri $uri -Headers $headers -ErrorAction Stop
         }
         catch { throw "Cannot read GitHub release for $repository ($endpoint): $($_.Exception.Message)" }
     }

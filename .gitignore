@@ -17,6 +17,12 @@
 *.ear
 *.zip
 *.keys
+*.key
+*.jks
+*.keystore
+*.pem
+*.p12
+*.pfx
 .upgrade-cache/
 *.tar.gz
 *.rar

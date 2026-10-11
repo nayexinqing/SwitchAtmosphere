@@ -3,9 +3,8 @@ param(
     [Parameter(Mandatory)] [string]$PackageDirectory,
     [Parameter(Mandatory)] [string]$TargetSystemVersion,
     [Parameter(Mandatory)] [string]$PlanPath,
-    [string]$SourceManifestPath,
-    [string]$UpgradeReportPath,
-    [switch]$VerifiedSeed,
+    [Parameter(Mandatory)] [string]$SourceManifestPath,
+    [Parameter(Mandatory)] [string]$UpgradeReportPath,
     [switch]$Build,
     [string]$ApprovedPlanSha256,
     [string]$OutputDirectory
@@ -35,7 +34,7 @@ function Get-ReleaseDisposition {
     $parts = $RelativePath.Split('/')
     $root = $parts[0]
     if ($root -ceq 'lakka') { return 'exclude:lakka' }
-    if ($RelativePath -match '(?i)(^|/)(?:[^/]*\.keys|id_rsa|id_ed25519|ssh_host_[^/]*_key|[^/]*\.pem|[^/]*\.p12|[^/]*\.pfx)$') {
+    if ($RelativePath -match '(?i)(^|/)(?:[^/]*\.(?:key|keys|jks|keystore|pem|p12|pfx|der|crt|cer)|id_rsa|id_ed25519|ssh_host_[^/]*_key)$') {
         throw "Key material found in package: $RelativePath"
     }
     if ($root -match '^Firmware[.\-]') {
@@ -44,8 +43,9 @@ function Get-ReleaseDisposition {
         }
         return 'include'
     }
-    if ($RelativePath -match '(?i)(^|/)(?:storage|savefiles|saves|roms|backup|cache|logs|crash_reports|fatal_errors)(/|$)' -or
-        $RelativePath -match '(?i)\.(?:log|sav|srm)$') {
+    if ($RelativePath -match '(?i)(^|/)(?:storage|savefiles|saves|roms|backup|backups|cache|logs|crash_reports|fatal_errors)(/|$)' -or
+        $RelativePath -match '(?i)\.(?:log|sav|srm|dmp|dump)$' -or
+        $RelativePath -match '(?i)(^|/)[^/]*(?:token|password|secret|credential|account)[^/]*\.[^/]+$') {
         return 'exclude:user-data'
     }
     if ($RelativePath -match '(?i)^switch/[^/]+/[^/]+\.config$') {
@@ -56,7 +56,22 @@ function Get-ReleaseDisposition {
             return 'exclude:game-modification'
         }
     }
-    if ($root -cin @('atmosphere', 'bootloader', 'config', 'switch', 'warmboot_mariko')) {
+    if ($root -ceq 'config') {
+        if ($parts.Count -lt 2 -or $parts[1] -cnotin @('ovl-sysmodules', 'sphaira', 'status-monitor', 'sys-clk', 'ultrahand')) {
+            throw "Unknown config path in package: $RelativePath"
+        }
+        return 'include'
+    }
+    if ($root -ceq 'switch') {
+        if ($parts.Count -ge 2 -and $parts[1] -cin @('.overlays', '.packages', 'Awoo-Installer', 'Checkpoint',
+                'CyberFoil', 'dbi', 'dbi-ru', 'DeepSea-Toolbox', 'EdiZon', 'goldleaf', 'jksv', 'linkalho',
+                'NX-Activity-Log', 'sphaira', 'wiliwili')) {
+            return 'include'
+        }
+        if ($parts.Count -eq 2 -and $parts[1] -match '(?i)\.(?:nro|ovl)$') { return 'include' }
+        throw "Unknown switch path in package: $RelativePath"
+    }
+    if ($root -cin @('atmosphere', 'bootloader', 'warmboot_mariko')) {
         return 'include'
     }
     if ($RelativePath -cin @('boot.dat', 'sdloader.enc', 'exosphere.ini', 'hbmenu.nro', 'hbmenu.nsp', 'payload.bin')) {
@@ -113,8 +128,9 @@ function Get-ReleasePlan {
             sha256 = Get-Hash $file.FullName
         })
     }
-    foreach ($required in @('atmosphere/package3', 'bootloader/update.bin', 'bootloader/sys/nyx.bin',
-            'bootloader/payloads/fusee.bin', 'payload.bin')) {
+    foreach ($required in @('atmosphere/package3', 'bootloader/hekate_ipl.ini', 'bootloader/update.bin',
+            'bootloader/sys/nyx.bin', 'bootloader/payloads/fusee.bin', 'payload.bin',
+            'atmosphere/contents/420000000000000B/exefs.nsp', 'switch/.overlays/sys-patch-overlay.ovl')) {
         if (-not $seen.Contains($required)) { throw "Package is missing required path: $required" }
     }
     if (-not @($included | Where-Object { $_.path -like "Firmware.$Version/*.nca" }).Count) {
@@ -140,13 +156,7 @@ if ((Split-Path $package -Leaf) -cne "Atmosphere-$TargetSystemVersion") {
 }
 $planFile = [IO.Path]::GetFullPath($PlanPath)
 if (Test-InsideDirectory $package $planFile) { throw 'Release plan cannot be inside the package directory.' }
-if ($VerifiedSeed -and ($SourceManifestPath -or $UpgradeReportPath)) {
-    throw 'Verified seed cannot also have upgrade source files.'
-}
-if (-not $VerifiedSeed -and (-not $SourceManifestPath -or -not $UpgradeReportPath)) {
-    throw 'Upgrade release requires both source manifest and upgrade report; use -VerifiedSeed for the initial base.'
-}
-$mode = if ($VerifiedSeed) { 'verified-seed' } else { 'upgrade' }
+$mode = 'upgrade'
 $sourceHash = $null
 $reportHash = $null
 $sourceSpec = $null
@@ -163,6 +173,27 @@ if ($mode -eq 'upgrade') {
         [string]$reportSpec.targetSystemVersion -cne $TargetSystemVersion -or
         $reportSpec.built -ne $true -or [string]$reportSpec.outputDirectory -cne (Split-Path $package -Leaf)) {
         throw 'Upgrade source manifest or report does not match the built package.'
+    }
+    if (($sourceSpec.artifacts | ConvertTo-Json -Depth 10 -Compress) -cne
+        ($reportSpec.artifacts | ConvertTo-Json -Depth 10 -Compress)) {
+        throw 'Upgrade report artifacts do not match the source manifest.'
+    }
+    if (-not $reportSpec.changes -or @($reportSpec.changes).Count -eq 0) {
+        throw 'Upgrade report has no changed or verified files.'
+    }
+    $reportedPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($change in $reportSpec.changes) {
+        $relative = [string]$change.path
+        $expected = [string]$change.sha256
+        if (-not $relative -or $relative -match '(^/|^[a-zA-Z]:|(^|/)\.\.(/|$)|:|\\)' -or
+            -not $reportedPaths.Add($relative) -or $expected -notmatch '^[a-fA-F0-9]{64}$') {
+            throw "Invalid upgrade report path or SHA-256: $relative"
+        }
+        $targetFile = Join-Path $package $relative
+        if (-not (Test-Path -LiteralPath $targetFile -PathType Leaf) -or
+            (Get-Hash $targetFile) -ne $expected.ToLowerInvariant()) {
+            throw "Upgrade report SHA-256 mismatch for path: $relative"
+        }
     }
     $sourceHash = Get-Hash $sourcePath
     $reportHash = Get-Hash $reportPath
