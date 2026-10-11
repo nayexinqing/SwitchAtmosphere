@@ -99,6 +99,13 @@ try {
     }
     Write-Output 'PASS: GitHub release assets are pinned by repository, tag, name and digest'
 
+    $targeted = Select-GitHubReleaseAssets -Releases $releases -TargetSystemVersion '23.0.1'
+    if ($targeted.targetSystemVersion -ne '23.0.1') { throw 'Explicit firmware version was not selected' }
+    Assert-Fails {
+        Select-GitHubReleaseAssets -Releases $releases -TargetSystemVersion '23.0.0'
+    } 'does not match requested'
+    Write-Output 'PASS: explicitly requested firmware version must match release tag'
+
     $releases['Atmosphere-NX/Atmosphere'].assets[0].name = 'atmosphere-1.11.9-master.zip'
     Assert-Fails { Select-GitHubReleaseAssets -Releases $releases } 'Atmosphere ZIP'
     $releases['Atmosphere-NX/Atmosphere'].assets[0].name = 'atmosphere-1.12.0-master.zip'

@@ -2,6 +2,8 @@
 param(
     [string]$PackageRoot,
     [string]$VerifiedBasesPath,
+    [string]$BaseDirectory,
+    [string]$TargetSystemVersion,
     [string]$AssetDirectory,
     [string]$ManifestPath,
     [string]$OutputDirectory,
@@ -17,7 +19,27 @@ if (-not $PackageRoot) { $PackageRoot = Split-Path $PSScriptRoot -Parent }
 if (-not $VerifiedBasesPath) { $VerifiedBasesPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'config/verified-bases.json' }
 if (-not $AssetDirectory) { $AssetDirectory = Join-Path $PackageRoot '.upgrade-cache/assets' }
 $PackageRoot = [IO.Path]::GetFullPath($PackageRoot)
-$base = Select-VerifiedBase -RegistryPath $VerifiedBasesPath -PackageRoot $PackageRoot
+if ($TargetSystemVersion -and $TargetSystemVersion -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Invalid target system version: $TargetSystemVersion"
+}
+if ($BaseDirectory) {
+    $basePath = [IO.Path]::GetFullPath($BaseDirectory)
+    if (-not (Test-Path -LiteralPath $basePath -PathType Container)) { throw "Base directory not found: $basePath" }
+    $baseItem = Get-Item -LiteralPath $basePath -Force
+    if (($baseItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Base directory cannot be a link: $basePath"
+    }
+    $baseName = Split-Path $basePath -Leaf
+    if ($baseName -cnotmatch '^Atmosphere-(\d+\.\d+\.\d+)$') {
+        throw "Base directory must be named Atmosphere-X.Y.Z: $basePath"
+    }
+    $base = [pscustomobject]@{
+        directory = $baseName
+        targetSystemVersion = $Matches[1]
+        path = $basePath
+    }
+}
+else { $base = Select-VerifiedBase -RegistryPath $VerifiedBasesPath -PackageRoot $PackageRoot }
 
 if ($Offline) {
     if (-not $ManifestPath) { throw '-Offline requires -ManifestPath pointing to a previously locked GitHub release manifest.' }
@@ -25,12 +47,15 @@ if ($Offline) {
     $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json -AsHashtable
 }
 else {
-    $releases = Get-GitHubLatestReleases
-    $manifest = Select-GitHubReleaseAssets -Releases $releases
+    $releases = Get-GitHubLatestReleases -TargetSystemVersion $TargetSystemVersion
+    $manifest = Select-GitHubReleaseAssets -Releases $releases -TargetSystemVersion $TargetSystemVersion
 }
 
 if ($manifest.schemaVersion -ne 1 -or [string]$manifest.targetSystemVersion -notmatch '^\d+\.\d+\.\d+$') {
     throw 'Invalid locked GitHub release manifest.'
+}
+if ($TargetSystemVersion -and [string]$manifest.targetSystemVersion -cne $TargetSystemVersion) {
+    throw "Locked firmware version $($manifest.targetSystemVersion) does not match requested $TargetSystemVersion."
 }
 $sources = @{
     atmosphere = 'Atmosphere-NX/Atmosphere'

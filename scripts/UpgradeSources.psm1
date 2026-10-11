@@ -49,18 +49,26 @@ function Select-VerifiedBase {
 
 function Get-GitHubLatestReleases {
     [CmdletBinding()]
-    param()
+    param([string]$TargetSystemVersion)
+
+    if ($TargetSystemVersion -and $TargetSystemVersion -notmatch '^\d+\.\d+\.\d+$') {
+        throw "Invalid target system version: $TargetSystemVersion"
+    }
 
     $releases = [ordered]@{}
     foreach ($repository in @('Atmosphere-NX/Atmosphere', 'CTCaer/hekate', 'impeeza/sys-patch', 'THZoria/NX_Firmware')) {
-        $uri = "https://api.github.com/repos/$repository/releases/latest"
+        $endpoint = if ($repository -eq 'THZoria/NX_Firmware' -and $TargetSystemVersion) {
+            "tags/$TargetSystemVersion"
+        }
+        else { 'latest' }
+        $uri = "https://api.github.com/repos/$repository/releases/$endpoint"
         try {
             $releases[$repository] = Invoke-RestMethod -Uri $uri -Headers @{
                 Accept = 'application/vnd.github+json'
                 'User-Agent' = 'SwitchAtmosphere-upgrade-workflow'
             } -ErrorAction Stop
         }
-        catch { throw "Cannot read latest GitHub release for $repository`: $($_.Exception.Message)" }
+        catch { throw "Cannot read GitHub release for $repository ($endpoint): $($_.Exception.Message)" }
     }
     return $releases
 }
@@ -117,7 +125,10 @@ function Select-SingleReleaseAsset {
 
 function Select-GitHubReleaseAssets {
     [CmdletBinding()]
-    param([Parameter(Mandatory)] [System.Collections.IDictionary]$Releases)
+    param(
+        [Parameter(Mandatory)] [System.Collections.IDictionary]$Releases,
+        [string]$TargetSystemVersion
+    )
 
     foreach ($repository in @('Atmosphere-NX/Atmosphere', 'CTCaer/hekate', 'impeeza/sys-patch', 'THZoria/NX_Firmware')) {
         if (-not $Releases.Contains($repository)) { throw "Missing GitHub release metadata: $repository" }
@@ -125,6 +136,9 @@ function Select-GitHubReleaseAssets {
     $firmwareTag = [string]$Releases['THZoria/NX_Firmware'].tag_name
     if ($firmwareTag -notmatch '^\d+\.\d+\.\d+$') {
         throw "Firmware release tag must be a numeric system version: $firmwareTag"
+    }
+    if ($TargetSystemVersion -and $firmwareTag -cne $TargetSystemVersion) {
+        throw "Firmware release tag $firmwareTag does not match requested $TargetSystemVersion."
     }
     $atmosphereTag = [string]$Releases['Atmosphere-NX/Atmosphere'].tag_name
     $hekateTag = [string]$Releases['CTCaer/hekate'].tag_name

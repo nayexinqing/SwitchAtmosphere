@@ -295,6 +295,17 @@ try {
         throw 'Same-version plan-only run created candidate directory'
     }
     Write-Output 'PASS: same-version updates plan into a distinct candidate directory'
+
+    $explicitReport = Join-Path $sameRoot 'explicit-base-report.json'
+    & $latestScriptPath -PackageRoot $sameRoot -VerifiedBasesPath (Join-Path $sameRoot 'missing-registry.json') `
+        -BaseDirectory $sameFixture.Output -TargetSystemVersion '23.0.1' `
+        -AssetDirectory $sameFixture.Assets -ManifestPath $sameFixture.Manifest `
+        -ReportPath $explicitReport -Offline | Out-Null
+    $explicitData = Get-Content -LiteralPath $explicitReport -Raw | ConvertFrom-Json
+    if ($explicitData.baseDirectory -ne 'Atmosphere-23.0.1') {
+        throw 'Explicit base was not selected without a local registry'
+    }
+    Write-Output 'PASS: explicit verified base can be supplied for CI replay'
 }
 finally {
     $root = [IO.Path]::GetFullPath($testRoot)
